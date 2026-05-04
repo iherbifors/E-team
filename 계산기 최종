@@ -1,0 +1,507 @@
+package MyCalc;
+
+import java.awt.EventQueue;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.GridLayout;
+import java.awt.Insets;
+import java.awt.RenderingHints;
+import java.awt.event.ActionListener;
+import java.util.*;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+
+// ═══════════════════════════════════════════════════════════════
+//  MyCalc.java  ─  다크 모던 스타일 계산기
+//  배경: 검정 계열 / 버튼: 짙은 회색 / 글자: 핑크색
+//  (MyCalc + Infix2Postfix + Calc 통합본 - 파일 하나로 실행 가능)
+// ═══════════════════════════════════════════════════════════════
+
+
+// ───────────────────────────────────────────────────────────────
+//  1) 중위 → 후위 변환 클래스
+//  예: "3+4*2" → "3 4 2 * +"
+// ───────────────────────────────────────────────────────────────
+class Infix2Postfix {
+
+    /**
+     * 중위 표현식(Infix)을 후위 표현식(Postfix)으로 변환한다.
+     * 지원 연산자: + - * / % ( )
+     *
+     * @param exp 중위 표현식 문자열
+     * @return 후위 표현식 문자열 (공백 구분), 입력이 없으면 null
+     */
+    public static String convert(String exp) {
+        if (exp == null || exp.length() == 0) return null;
+
+        // % 를 구분자에 포함 → % 도 연산자로 토큰 분리
+        StringTokenizer st = new StringTokenizer(exp, "+-*/%()", true);
+        Stack<String> stack = new Stack<>();  // 연산자를 임시 저장하는 스택
+        StringBuffer buf = new StringBuffer(); // 후위 표현식을 쌓을 버퍼
+
+        while (st.hasMoreTokens()) {
+            String tok = st.nextToken().trim(); // 앞뒤 공백 제거
+            if (tok.length() == 0) continue;
+
+            // ── 음수 처리 ─────────────────────────────────────
+            // 수식 시작, '(' 직후, 연산자 직후에 오는 '-' 는 음수 부호로 처리
+            if (tok.equals("-")) {
+                boolean isUnary = buf.length() == 0                         // 수식 맨 앞
+                    || buf.toString().endsWith("( ")                        // '(' 바로 뒤
+                    || (buf.length() > 0 && opType(buf.substring(buf.length() - 2).trim()) > 0); // 연산자 뒤
+
+                if (isUnary) {
+                    String next = st.nextToken().trim(); // 음수 부호 뒤의 숫자
+                    buf.append("-").append(next).append(" "); // "-숫자" 형태로 후위에 직접 추가
+                    continue;
+                }
+            }
+
+            // ── 여는 괄호: 스택에 push ────────────────────────
+            if (tok.equals("(")) {
+                stack.push(tok);
+            }
+            // ── 닫는 괄호: '(' 나올 때까지 스택 pop ──────────
+            else if (tok.equals(")")) {
+                while (!stack.isEmpty() && !stack.peek().equals("("))
+                    buf.append(stack.pop()).append(" ");
+                if (!stack.isEmpty()) stack.pop(); // '(' 제거
+            }
+            // ── 연산자: 우선순위 비교 후 처리 ────────────────
+            else if (opType(tok) > 0) {
+                // 스택 top의 우선순위가 현재 연산자 이상이면 먼저 pop
+                while (!stack.isEmpty()) {
+                    if (stack.peek().equals("(")) break;
+                    int p1 = getPriority(tok.charAt(0));        // 현재 연산자 우선순위
+                    int p2 = getPriority(stack.peek().charAt(0)); // 스택 top 우선순위
+                    if (p1 <= p2) buf.append(stack.pop()).append(" ");
+                    else break;
+                }
+                stack.push(tok); // 현재 연산자를 스택에 push
+            }
+            // ── 숫자(피연산자): 후위 버퍼에 바로 추가 ────────
+            else {
+                buf.append(tok).append(" ");
+            }
+        }
+
+        // 스택에 남은 연산자 모두 후위 버퍼에 추가
+        while (!stack.isEmpty())
+            buf.append(stack.pop()).append(" ");
+
+        return buf.toString();
+    }
+
+    /**
+     * 문자열이 연산자인지 확인한다.
+     * +,-,*,/,% → 양수(종류 번호) 반환 / 아니면 -1
+     */
+    public static int opType(String op) {
+        op = op.trim();
+        if (op.length() > 1 || op.length() == 0) return -1;
+        switch (op.charAt(0)) {
+            case '+': return 1;
+            case '-': return 2;
+            case '*': return 3;
+            case '/': return 4;
+            case '%': return 5; // % 연산자 추가
+        }
+        return -1;
+    }
+
+    /**
+     * 연산자의 우선순위를 반환한다.
+     * % 는 * / 와 동일한 우선순위(2)로 설정
+     */
+    private static int getPriority(char op) {
+        switch (op) {
+            case '+': case '-': return 1;           // 덧셈/뺄셈: 낮은 우선순위
+            case '*': case '/': case '%': return 2; // 곱셈/나눗셈/나머지: 높은 우선순위
+            default: return -1;
+        }
+    }
+}
+
+
+// ───────────────────────────────────────────────────────────────
+//  2) 후위 표현식 계산 클래스
+//  스택을 이용해 후위 표현식을 계산한다.
+// ───────────────────────────────────────────────────────────────
+class Calc {
+
+    /**
+     * 후위 표현식을 계산하여 double 결과를 반환한다.
+     * 지원 연산자: + - * / %
+     *
+     * @param postfix 후위 표현식 (공백으로 토큰 구분)
+     * @return 계산 결과
+     * @throws ArithmeticException      0으로 나누기/나머지 연산 시
+     * @throws IllegalArgumentException 잘못된 수식 형식일 때
+     */
+    public static double eval(String postfix) {
+        if (postfix == null || postfix.trim().isEmpty())
+            throw new IllegalArgumentException("수식이 비어 있습니다.");
+
+        Stack<Double> stack = new Stack<>(); // 피연산자를 저장하는 스택
+        StringTokenizer st = new StringTokenizer(postfix, " ");
+
+        while (st.hasMoreTokens()) {
+            String tok = st.nextToken().trim();
+            if (tok.isEmpty()) continue;
+
+            // ── 연산자: 스택에서 피연산자 2개 꺼내 계산 ──────
+            if (isOperator(tok)) {
+                if (stack.size() < 2)
+                    throw new IllegalArgumentException("잘못된 수식입니다.");
+
+                double b = stack.pop(); // 오른쪽 피연산자 (나중에 push된 것)
+                double a = stack.pop(); // 왼쪽 피연산자 (먼저 push된 것)
+                double result;
+
+                switch (tok.charAt(0)) {
+                    case '+': result = a + b; break;
+                    case '-': result = a - b; break;
+                    case '*': result = a * b; break;
+                    case '/':
+                        // 0으로 나누기 방지
+                        if (b == 0) throw new ArithmeticException("0으로 나눌 수 없습니다.");
+                        result = a / b; break;
+                    case '%':
+                        // 나머지 연산 추가 (% 지원)
+                        if (b == 0) throw new ArithmeticException("0으로 나머지 연산 불가.");
+                        result = a % b; break;
+                    default:
+                        throw new IllegalArgumentException("알 수 없는 연산자: " + tok);
+                }
+                stack.push(result); // 계산 결과를 다시 스택에 push
+
+            }
+            // ── 숫자: 스택에 push ─────────────────────────────
+            else {
+                try {
+                    stack.push(Double.parseDouble(tok));
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("숫자 변환 오류: " + tok);
+                }
+            }
+        }
+
+        // 정상적인 수식이면 스택에 결과 하나만 남음
+        if (stack.size() != 1)
+            throw new IllegalArgumentException("잘못된 수식입니다.");
+
+        return stack.pop();
+    }
+
+    /**
+     * 토큰이 연산자(+,-,*,/,%)인지 확인한다.
+     */
+    private static boolean isOperator(String tok) {
+        return tok.length() == 1 && "+-*/%".indexOf(tok.charAt(0)) >= 0;
+    }
+}
+
+
+// ───────────────────────────────────────────────────────────────
+//  3) 둥근 모서리 버튼 UI 커스텀 클래스
+//  Java 기본 버튼 대신 직접 그려서 둥근 사각형 + 호버/클릭 효과 구현
+// ───────────────────────────────────────────────────────────────
+class RoundButtonUI extends javax.swing.plaf.basic.BasicButtonUI {
+
+    private final Color baseColor;  // 버튼 기본 배경색
+    private final Color textColor;  // 버튼 글자 색
+
+    /**
+     * @param base 버튼 배경색
+     * @param text 글자 색 (핑크)
+     */
+    public RoundButtonUI(Color base, Color text) {
+        this.baseColor = base;
+        this.textColor = text;
+    }
+
+    @Override
+    public void installUI(JComponent c) {
+        super.installUI(c);
+        // 기본 버튼 장식 모두 제거 (직접 그릴 것이므로)
+        JButton btn = (JButton) c;
+        btn.setOpaque(false);         // 배경을 직접 그리므로 false
+        btn.setFocusPainted(false);   // 포커스 테두리 제거
+        btn.setBorderPainted(false);  // 기본 테두리 제거
+        btn.setContentAreaFilled(false); // 기본 채우기 제거
+    }
+
+    @Override
+    public void paint(Graphics g, JComponent c) {
+        JButton btn = (JButton) c;
+        Graphics2D g2 = (Graphics2D) g.create();
+
+        // 안티앨리어싱 ON → 둥근 모서리가 부드럽게 렌더링됨
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+        int w = c.getWidth();
+        int h = c.getHeight();
+        int arc = 14; // 모서리 둥글기 반지름 (클수록 더 둥글게)
+
+        boolean pressed  = btn.getModel().isPressed();  // 클릭 중 여부
+        boolean hovered  = btn.getModel().isRollover(); // 마우스 올라간 여부
+
+        // ── 버튼 배경 그리기 ──────────────────────────────────
+        if (pressed) {
+            // 눌렸을 때: 더 밝게 (밝은 회색)
+            g2.setColor(baseColor.brighter());
+        } else if (hovered) {
+            // 마우스 올라갔을 때: 약간 밝게
+            g2.setColor(baseColor.brighter().brighter());
+        } else {
+            // 기본 상태
+            g2.setColor(baseColor);
+        }
+        // 둥근 사각형으로 버튼 배경 채우기
+        g2.fillRoundRect(1, 1, w - 2, h - 2, arc, arc);
+
+        // ── 버튼 테두리 (살짝 밝은 선) ───────────────────────
+        g2.setColor(new Color(80, 80, 85)); // 테두리색: 배경보다 약간 밝은 회색
+        g2.drawRoundRect(1, 1, w - 2, h - 2, arc, arc);
+
+        // ── 텍스트 중앙 정렬해서 그리기 ──────────────────────
+        g2.setFont(btn.getFont());
+        g2.setColor(textColor); // 핑크색 텍스트
+        FontMetrics fm = g2.getFontMetrics();
+        String text = btn.getText();
+        // 텍스트를 버튼 정중앙에 배치
+        int tx = (w - fm.stringWidth(text)) / 2;
+        int ty = (h - fm.getHeight()) / 2 + fm.getAscent();
+        // 클릭 시 텍스트를 1px 아래로 내려 눌리는 느낌 연출
+        if (pressed) ty += 1;
+        g2.drawString(text, tx, ty);
+
+        g2.dispose();
+    }
+
+    @Override
+    public Dimension getPreferredSize(JComponent c) {
+        // 버튼 기본 크기 지정
+        return new Dimension(68, 48);
+    }
+}
+
+
+// ───────────────────────────────────────────────────────────────
+//  4) 계산기 GUI 메인 클래스
+//  Eclipse에서 이 클래스의 main() 을 실행하면 됩니다.
+// ───────────────────────────────────────────────────────────────
+public class MyCalc extends JFrame {
+
+    private String  exp         = "";    // 현재 입력 중인 수식 문자열
+    private boolean resultShown = false; // 결과 표시 상태 여부 (숫자 입력 시 초기화 판단용)
+
+    private static final long serialVersionUID = 1L;
+    private JTextField textField;   // 수식/결과 표시 텍스트 필드
+    private JButton btnNewButton_1; // 기존 코드 호환용 (0 버튼 참조)
+
+    // ── 색상 팔레트 상수 ─────────────────────────────────────
+    // 이미지 참고: 전체적으로 검정/짙은 회색 계열
+    private static final Color COLOR_BG       = new Color(18,  18,  18);  // 전체 배경 (거의 검정)
+    private static final Color COLOR_BODY     = new Color(28,  28,  28);  // 계산기 본체 배경
+    private static final Color COLOR_DISPLAY  = new Color(42,  42,  42);  // 디스플레이 배경 (짙은 회색)
+    private static final Color COLOR_BTN_NUM  = new Color(48,  48,  50);  // 숫자 버튼 배경
+    private static final Color COLOR_BTN_OP   = new Color(38,  38,  40);  // 연산자 버튼 배경 (약간 더 짙게)
+    private static final Color COLOR_BTN_FUNC = new Color(35,  35,  37);  // 기능 버튼 배경 (C 등)
+    private static final Color COLOR_TEXT_BTN = new Color(255, 182, 193); // 버튼 글자색: 핑크 (Light Pink)
+    private static final Color COLOR_TEXT_DIS = new Color(255, 220, 230); // 디스플레이 글자: 연한 핑크
+
+    // ── 폰트 상수 ────────────────────────────────────────────
+    // SansSerif: 깔끔한 고딕 계열 폰트
+    private static final Font FONT_BTN     = new Font("SansSerif", Font.PLAIN, 17); // 버튼 폰트
+    private static final Font FONT_DISPLAY = new Font("SansSerif", Font.BOLD,  28); // 디스플레이 폰트
+
+    // ── 진입점 ───────────────────────────────────────────────
+    public static void main(String[] args) {
+        // Metal L&F 사용: 커스텀 UI가 가장 잘 적용되는 L&F
+        try {
+            UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName());
+        } catch (Exception e) { /* 무시하고 기본값 사용 */ }
+
+        // Swing은 EDT(이벤트 디스패치 스레드)에서 실행해야 안전함
+        EventQueue.invokeLater(() -> {
+            try { new MyCalc().setVisible(true); }
+            catch (Exception e) { e.printStackTrace(); }
+        });
+    }
+
+    // ── 생성자: 전체 UI 구성 ─────────────────────────────────
+    public MyCalc() {
+        setTitle("계산기");
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setResizable(false); // 창 크기 고정 (레이아웃 틀어짐 방지)
+
+        // ── 최외곽 패널 (창 배경) ──────────────────────────
+        JPanel outerPane = new JPanel(new BorderLayout());
+        outerPane.setBackground(COLOR_BG);
+        outerPane.setBorder(new EmptyBorder(16, 16, 16, 16)); // 창 가장자리 여백
+        setContentPane(outerPane);
+
+        // ── 계산기 본체 패널 ───────────────────────────────
+        // 이미지처럼 둥근 검정 본체를 표현하기 위해 패널을 한 겹 더 감쌈
+        JPanel bodyPane = new JPanel(new BorderLayout(0, 10));
+        bodyPane.setBackground(COLOR_BODY);
+        bodyPane.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(55, 55, 58), 1), // 본체 테두리선
+            new EmptyBorder(14, 14, 14, 14)                           // 본체 내부 여백
+        ));
+        outerPane.add(bodyPane, BorderLayout.CENTER);
+
+        // ── 디스플레이 영역 ────────────────────────────────
+        JPanel displayWrapper = new JPanel(new BorderLayout());
+        displayWrapper.setBackground(COLOR_DISPLAY);
+        // 디스플레이 둥근 테두리 (이미지의 LCD 패널 느낌)
+        displayWrapper.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(60, 60, 65), 1),
+            new EmptyBorder(0, 0, 0, 0)
+        ));
+
+        textField = new JTextField("0");
+        textField.setEditable(false);                               // 직접 타이핑 불가
+        textField.setHorizontalAlignment(SwingConstants.RIGHT);     // 오른쪽 정렬
+        textField.setBackground(COLOR_DISPLAY);                     // 디스플레이 배경색
+        textField.setForeground(COLOR_TEXT_DIS);                    // 연한 핑크 글자
+        textField.setFont(FONT_DISPLAY);                            // 큰 볼드 폰트
+        textField.setBorder(new EmptyBorder(18, 12, 18, 12));       // 상하 18px 여백 → 입력창 높게
+        textField.setCaretColor(COLOR_TEXT_DIS);                    // 커서 색도 통일
+        displayWrapper.add(textField, BorderLayout.CENTER);
+        bodyPane.add(displayWrapper, BorderLayout.NORTH);
+
+        // ── 버튼 그리드 패널 ───────────────────────────────
+        // 버튼 배치 (아까 전 배치 복원):
+        //   행1: (    )    %    C
+        //   행2: 7    8    9    /
+        //   행3: 4    5    6    *
+        //   행4: 1    2    3    -
+        //   행5: 0    .    =    +
+        JPanel btnPanel = new JPanel();
+        btnPanel.setBackground(COLOR_BODY);
+        btnPanel.setLayout(new GridLayout(5, 4, 7, 7)); // 5행 4열, 간격 7px
+        bodyPane.add(btnPanel, BorderLayout.CENTER);
+
+        // 행 1: 괄호, %, C (기능 버튼)
+        btnPanel.add(makeButton("(",  COLOR_BTN_FUNC, e -> appendToExp("(")));   // 여는 괄호
+        btnPanel.add(makeButton(")",  COLOR_BTN_FUNC, e -> appendToExp(")")));   // 닫는 괄호
+        btnPanel.add(makeButton("%",  COLOR_BTN_OP,   e -> appendToExp("%")));   // 나머지 연산자
+        btnPanel.add(makeButton("C",  COLOR_BTN_FUNC, e -> clearExp()));         // 전체 초기화
+
+        // 행 2: 숫자 7~9, 나누기
+        btnPanel.add(makeButton("7",  COLOR_BTN_NUM, e -> appendDigit("7")));
+        btnPanel.add(makeButton("8",  COLOR_BTN_NUM, e -> appendDigit("8")));
+        btnPanel.add(makeButton("9",  COLOR_BTN_NUM, e -> appendDigit("9")));
+        btnPanel.add(makeButton("/",  COLOR_BTN_OP,  e -> appendToExp("/")));   // 나누기 연산자
+
+        // 행 3: 숫자 4~6, 곱하기
+        btnPanel.add(makeButton("4",  COLOR_BTN_NUM, e -> appendDigit("4")));
+        btnPanel.add(makeButton("5",  COLOR_BTN_NUM, e -> appendDigit("5")));
+        btnPanel.add(makeButton("6",  COLOR_BTN_NUM, e -> appendDigit("6")));
+        btnPanel.add(makeButton("*",  COLOR_BTN_OP,  e -> appendToExp("*")));   // 곱하기 연산자
+
+        // 행 4: 숫자 1~3, 빼기
+        btnPanel.add(makeButton("1",  COLOR_BTN_NUM, e -> appendDigit("1")));
+        btnPanel.add(makeButton("2",  COLOR_BTN_NUM, e -> appendDigit("2")));
+        btnPanel.add(makeButton("3",  COLOR_BTN_NUM, e -> appendDigit("3")));
+        btnPanel.add(makeButton("-",  COLOR_BTN_OP,  e -> appendToExp("-")));   // 빼기 연산자
+
+        // 행 5: 0, 소수점, =, +
+        // btnNewButton_1: 기존 코드 호환을 위해 0 버튼을 별도 필드로 보관
+        btnNewButton_1 = makeButton("0", COLOR_BTN_NUM, e -> appendDigit("0"));
+        btnPanel.add(btnNewButton_1);
+        btnPanel.add(makeButton(".",  COLOR_BTN_NUM, e -> appendToExp(".")));   // 소수점
+        btnPanel.add(makeButton("=",  COLOR_BTN_OP,  e -> calculate()));        // 계산 실행
+        btnPanel.add(makeButton("+",  COLOR_BTN_OP,  e -> appendToExp("+")));   // 더하기 연산자
+
+        // 컴포넌트 크기에 맞게 창 자동 조절 후 화면 중앙 배치
+        pack();
+        setLocationRelativeTo(null);
+    }
+
+    // ── 숫자 입력 처리 ───────────────────────────────────────
+    // 결과가 표시된 상태에서 숫자를 누르면 수식 초기화 후 새로 시작
+    // 연산자를 누른 후 숫자를 누르면 이어서 입력됨
+    private void appendDigit(String digit) {
+        if (resultShown) {
+            // 결과 표시 후 숫자 입력 → 새 수식 시작
+            exp = "";
+            resultShown = false;
+        }
+        exp += digit;
+        textField.setText(exp);
+    }
+
+    // ── 연산자 / 기호 입력 처리 ──────────────────────────────
+    // resultShown 을 false 로만 바꾸고 수식에 이어 붙임
+    // (결과값 뒤에 연산자를 누르면 이어서 계산 가능: 예) 결과 6 → '+3' 입력)
+    private void appendToExp(String token) {
+        resultShown = false;
+        exp += token;
+        textField.setText(exp);
+    }
+
+    // ── C 버튼: 전체 초기화 ──────────────────────────────────
+    private void clearExp() {
+        resultShown = false;
+        exp = "";
+        textField.setText("0"); // 디스플레이를 0으로 리셋
+    }
+
+    // ── = 버튼: 계산 실행 ────────────────────────────────────
+    private void calculate() {
+        try {
+            // 1단계: 중위 표현식 → 후위 표현식 변환
+            String postfix = Infix2Postfix.convert(exp);
+            // 2단계: 후위 표현식 계산
+            double result  = Calc.eval(postfix);
+
+            // 정수 결과면 소수점 없이 표시 (예: 6.0 → 6)
+            if (result == Math.floor(result) && !Double.isInfinite(result))
+                textField.setText(String.valueOf((long) result));
+            else
+                textField.setText(String.valueOf(result));
+
+            exp = textField.getText(); // 결과값을 exp 에 저장 → 이어서 연산 가능
+            resultShown = true;        // 결과 표시 상태로 전환
+
+        } catch (ArithmeticException ae) {
+            // 0으로 나누기 등 산술 오류
+            textField.setText("오류: " + ae.getMessage());
+            exp = "";
+            resultShown = false;
+        } catch (Exception ex) {
+            // 수식 형식이 잘못된 경우
+            textField.setText("수식을 입력하세요.");
+            exp = "";
+            resultShown = false;
+        }
+    }
+
+    // ── 버튼 생성 팩토리 메서드 ──────────────────────────────
+    // 반복되는 버튼 생성 코드를 하나로 통일
+    // label: 버튼에 표시할 텍스트
+    // bg: 버튼 배경색
+    // listener: 클릭 시 실행할 동작
+    private JButton makeButton(String label, Color bg, ActionListener listener) {
+        JButton btn = new JButton(label);
+        btn.setFont(FONT_BTN);
+        // 커스텀 둥근 버튼 UI 적용 (배경색 + 핑크 텍스트)
+        btn.setUI(new RoundButtonUI(bg, COLOR_TEXT_BTN));
+        btn.setMargin(new Insets(0, 0, 0, 0)); // 내부 여백 제거 (UI에서 직접 처리)
+        btn.addActionListener(listener);
+        return btn;
+    }
+
+    // ── 기존 코드 호환 getter ────────────────────────────────
+    public JTextField getTextField()      { return textField; }
+    public JButton    getBtnNewButton_1() { return btnNewButton_1; }
+}
